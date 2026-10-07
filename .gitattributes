@@ -16,3 +16,13 @@
 *.xpi binary
 *.pem binary
 *.mhtml -text
+
+# Exact bytes for authoritative documentation recovery and the owned helper.
+/master/docstore.py -text
+/docs/knowledge-export.jsonl -text
+/docs/knowledge-export.sha256.json -text
+/docs/knowledge-export-history/*.jsonl -text
+/docs/knowledge-export-history/*.sha256.json -text
+/docs/topics/*-export.jsonl -text
+/docs/topics/*-export.sha256.json -text
+/docs/topics/*-export-history/* -text

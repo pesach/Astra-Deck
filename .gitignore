@@ -1,61 +1,32 @@
-node_modules/
-.venv/
-build/
-*.pem
-*.mhtml
-*.bak
-comments.png
-YTKit-v1.2.0.user.js
+# Environment files may contain credentials; other owned files are trackable.
+!*
+.env
+.env.*
+*.env
+*.env.*
+.envrc
+.envrc.*
+.dev.vars
+.dev.vars.*
+# Private local agent context retained pending supported consumer relocation.
+/.nmsa/index.sqlite
+/.nmsa/index.sqlite-*
 
-# Authenticated selector-capture state is local, sensitive, and must never be
-# staged. Use an external Chrome profile for account-gated MHTML captures.
-.auth/
-playwright/.auth/
-capture-profiles/
-*.storageState.json
-
-# v3.23.0 NX15: AstraDownloader.exe is a release artifact built by
-# astra_downloader/build.py — it does not belong in the source tree.
-# Build locally then attach it to the GitHub Release.
-AstraDownloader.exe
-CLAUDE.md
-CODEX-CHANGELOG.md
-CODEX_CHANGELOG.md
-CLAUDE-HANDOFF-PROMPT.md
-CONTINUATION_PROMPT.md
-.claude/
-.claude-octopus/
-.codex/
-.factory/
-docs/research/
-
-# Internal process / working notes — kept local, not part of the published repo.
-AGENTS.md
-AUTONOMOUS-LOOP-STATE.md
-COMPLETED.md
-RESEARCH_REPORT.md
-docs/audit/
-docs/research-cycle-*.md
-docs/research-feature-plan-*.md
-docs/archive/research/
-docs/archive/roadmap-dossier-*.md
-
-# Python build artifacts
-astra_downloader/build/
-astra_downloader/dist/
-astra_downloader/*.spec
-astra_downloader/__pycache__/
-*.pyc
-
-# Local-only working notes (never track). Public product docs — README,
-# CHANGELOG, INSTALL, SECURITY, ROADMAP, docs/ — stay tracked: CI tests pin
-# them and the store listings require a reachable privacy policy.
-RESEARCH.md
-TODO.md
-NOTES.md
-AUDIT*.md
-SESSION*.md
-
-# AI config
-.ai/
-PROJECT_CONTEXT.md
+# Repository-owned authoritative documentation: version exports, not live DB/locks.
+/docs/knowledge.sqlite
+/docs/knowledge.sqlite-*
+/docs/knowledge.sqlite.writer-lock/
+/docs/.*.pending
+/docs/knowledge-export-history/.*.pending
+!/master/docstore.py
+!/docs/knowledge-export.jsonl
+!/docs/knowledge-export.sha256.json
+!/docs/knowledge-export-history/
+!/docs/knowledge-export-history/*.jsonl
+!/docs/knowledge-export-history/*.sha256.json
+/docs/.docstore-commit/
+/docs/docstore-commit-config.json
+/docs/topics/*.sqlite
+/docs/topics/*.sqlite.writer-lock/
+/docs/topics/*.sqlite-*
+/docs/topics/*.lock/
