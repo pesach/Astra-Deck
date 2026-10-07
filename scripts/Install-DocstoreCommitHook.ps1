@@ -93,10 +93,15 @@ foreach ($event in @('post-commit','post-merge','post-rewrite','post-applypatch'
     if ($hasOriginal) { $lines += 'hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)'; $lines += ($invokePrefix + 'sh "$hook_dir/' + $event + '.docstore-original" "$@" || original_status=$?') }
     $lines += 'repo_root=$(git rev-parse --show-toplevel) || exit 1'
     $invokePrefix = if ($event -eq 'post-rewrite') { 'printf ''%s\n'' "$rewrite_input" | ' } else { '' }
-    $lines += ($invokePrefix + $launcherShell + ' -NoProfile -File "$repo_root/scripts/Run-DocstoreCommitHook.ps1" -RepositoryRoot "$repo_root" -Event ' + $event)
+    $lines += ($invokePrefix + $launcherShell + ' -NoProfile -WindowStyle Hidden -NonInteractive -File "$repo_root/scripts/Run-DocstoreCommitHook.ps1" -RepositoryRoot "$repo_root" -Event ' + $event)
     $lines += 'doc_status=$?'; $lines += 'if [ "$original_status" -ne 0 ]; then exit "$original_status"; fi'; $lines += 'exit "$doc_status"'
     $expectedBody = ($lines -join "`n") + "`n"
-    if ($managed -and [Text.Encoding]::UTF8.GetString($existing) -ne $expectedBody) { throw 'Managed hook content differs from reviewed dispatcher; preserve and review' }
+    # Only the exact prior dispatcher may migrate; retain rejection of edits.
+    $legacyBody = $expectedBody.Replace(' -NoProfile -WindowStyle Hidden -NonInteractive -File ', ' -NoProfile -File ')
+    if ($managed) {
+        $existingBody = [Text.Encoding]::UTF8.GetString($existing)
+        if ($existingBody -cne $expectedBody -and $existingBody -cne $legacyBody) { throw 'Managed hook content differs from reviewed dispatcher; preserve and review' }
+    }
     $entries += @{ Target=$target; Backup=$backup; Original=if ($existing -and -not $managed) {$existing} else {$null}; Body=($lines -join "`n") + "`n" }
 }
 New-Item -ItemType Directory -Path $docs,$targetDir -Force | Out-Null

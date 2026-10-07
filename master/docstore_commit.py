@@ -37,7 +37,7 @@ def git(*args: str) -> bytes:
         if name.startswith('GIT_'):
             env.pop(name, None)
     env['GIT_NO_REPLACE_OBJECTS'] = '1'
-    result = subprocess.run(['git', '-C', str(ROOT), *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+    result = subprocess.run(['git', '-C', str(ROOT), *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:
         raise ds.StoreError('Git evidence command failed; output withheld')
     return result.stdout
@@ -664,7 +664,7 @@ def launch() -> None:
             env.pop(name, None)
     kwargs = {'env': env, 'cwd': str(ROOT), 'stdin': subprocess.DEVNULL, 'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL, 'close_fds': True}
     if os.name == 'nt':
-        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs['start_new_session'] = True
     subprocess.Popen([python, str(Path(__file__).resolve()), 'worker'], **kwargs)
