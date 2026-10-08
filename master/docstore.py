@@ -96,6 +96,10 @@ CREDENTIAL_LABEL = re.compile(
 OPERATOR_PASSWORD_LABEL = re.compile(
     r'(?i)\b(?:storefront|reviewer)(?:[ \t]+(?:account|login|access|store)){0,3}[ \t]+password[ \t]*:[ \t]*'
     r"""(?P<value>\x60[^\x60\r\n]*\x60|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,;#\x60"'<>]+)""")
+NARRATIVE_PASSWORD_LITERAL = re.compile(
+    r"""(?i)(?P<quote>["'\x60])(?:password|passwd|pwd)[ \t]*(?::|=)[ \t]*"""
+    r"""(?P<value>[^"'\x60\r\n]{1,256})(?P=quote)|"""
+    r"""(?P<short_quote>["'\x60])passwd[ \t]+(?P<short_value>[^"'\x60\r\n]{1,256})(?P=short_quote)""")
 BEARER_LITERAL = re.compile(
     r"""(?i)\b(?:proxy-)?authorization[ \t]*:[ \t]*(?:Bearer|Basic)[ \t]+"""
     r"""(<[^<>\r\n]+>|\$\{\{[^\r\n}]*\}\}|\x60[^\x60\r\n]*\x60|"(?:\\.|[^"\\\r\n])*"|"""
@@ -169,6 +173,13 @@ def generic_credential_guard(text: str, category: str) -> None:
     code_spans = [(m.start('body'), m.end('body'), m.group('language').casefold()) for m in CODE_CONTEXT.finditer(text)]
     config_spans = [(m.start('body'), m.end('body')) for m in CONFIG_CONTEXT.finditer(text)]
     shell_spans = [(m.start('body'), m.end('body')) for m in SHELL_CONTEXT.finditer(text)]
+    # Historical prose can quote the entire label plus literal, rather than
+    # quote only the RHS. Keep ordinary "password field" UI prose outside this
+    # guard; colon/equals labels and the explicit passwd shorthand are evidence.
+    for match in NARRATIVE_PASSWORD_LITERAL.finditer(text):
+        value = match.group('value') or match.group('short_value')
+        if not credential_reference(value):
+            raise StoreError(f'secret indicator (narrative-password-literal) in {category}; content withheld')
     for match in CREDENTIAL_ASSIGNMENT.finditer(text):
         key = match.group('key').strip("\"'")
         if not SENSITIVE_NAME.search(key):

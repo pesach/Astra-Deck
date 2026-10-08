@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Commit documentation worker: immutable Git evidence, guarded SQLite CAS, no Git writes."""
+"""Commit documentation worker and guarded publication-only snapshot commits."""
 from __future__ import annotations
 import argparse
 import contextlib
@@ -29,7 +29,7 @@ MAX_TEXT = 16000
 STARTUP_INSTRUCTION = 'Before any new repository work, run `python master/docstore_commit.py startup --json` and finish pending closing documentation. If it exits nonzero, pause new work. If Codex usage is unavailable, preserve the deferred queue and retry at the next startup; never treat a failed/deferred receipt as complete. This gate does not apply recursively to the startup/commit documentation worker or its bounded internal JSON-only AI review: the parent worker already owns closing work, and that internal review must not invoke startup, worker, or tools.'
 
 
-def git(*args: str) -> bytes:
+def git(*args: str, timeout: int = 90) -> bytes:
     # Git hook context variables may point at the caller index/worktree. Reads
     # explicitly bind this checkout and never inherit object replacement refs.
     env = os.environ.copy()
@@ -37,7 +37,7 @@ def git(*args: str) -> bytes:
         if name.startswith('GIT_'):
             env.pop(name, None)
     env['GIT_NO_REPLACE_OBJECTS'] = '1'
-    result = subprocess.run(['git', '-C', str(ROOT), *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    result = subprocess.run(['git', '-C', str(ROOT), *args], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:
         raise ds.StoreError('Git evidence command failed; output withheld')
     return result.stdout
@@ -332,7 +332,7 @@ def validate_plan(plan: dict, packet: dict) -> list[tuple[dict, bytes]]:
     return prepared
 
 
-def index_stores(stores: dict[str, str]) -> None:
+def index_stores(stores: dict[str, str], *, verify_only: bool = False) -> None:
     path = ds.checked_path('AGENTS.md', mutation=True)
     old = path.read_bytes() if path.exists() else b''
     text = old.decode('utf-8-sig')
@@ -351,7 +351,7 @@ def index_stores(stores: dict[str, str]) -> None:
     if any(ds.checked_path(value).is_file() for value in known):
         text = text.replace('| No owned SQLite store discovered | Use this index and the small owned Markdown corpus; do not invent a database or retrieval command. |', '| Owned commit topic stores | See the managed Commit documentation stores index below for exact authorities and retrieval. |')
         text = text.replace('No substantive owned documentation corpus justified a new authority database in this audit.', 'The initial audit retained a small Markdown corpus; subsequent actual commits now have authoritative topic documentation in the stores indexed below.')
-    lines = [BEGIN, '## Commit documentation stores', '', 'After every local commit, the installed hook queues Codex review of bounded committed evidence. Hook-generated edits remain uncommitted. Existing decisions are preserved; new AI decisions are proposals. Inspect failures with `python master/docstore_commit.py status --json`; replay with `python master/docstore_commit.py replay --commit <full-hash> --foreground`.', '', '| Owned authority | Versioned export / checksum | History | Retrieval |', '|---|---|---|---|']
+    lines = [BEGIN, '## Commit documentation stores', '', 'After every local commit, the installed hook queues Codex review of bounded committed evidence. After successful closing review, a validated publication-only snapshot commit versions owned exports and the topic index without another AI invocation. Failed snapshots retain closing work for startup recovery. Existing decisions are preserved; new AI decisions are proposals. Inspect failures with `python master/docstore_commit.py status --json`; replay with `python master/docstore_commit.py replay --commit <full-hash> --foreground`.', '', '| Owned authority | Versioned export / checksum | History | Retrieval |', '|---|---|---|---|']
     for value in sorted(known):
         db = ds.checked_path(value)
         if not db.is_file():
@@ -363,6 +363,8 @@ def index_stores(stores: dict[str, str]) -> None:
         lines.append(f'| `{value}` | `{export.relative_to(ROOT).as_posix()}` / `{checksum.relative_to(ROOT).as_posix()}` | `{history.relative_to(ROOT).as_posix()}/` | `python master/docstore.py --db {value} search <words> --limit 5 --json` |')
     lines.extend(['', 'Recovery before installation: indexed missing SQLite authority with an existing versioned export pair blocks installation. First run `python master/docstore.py recover --target <separate-absent-owned.sqlite> --export <owned-store-export.jsonl> --checksum <owned-store-export.sha256.json>`, then `python master/docstore.py --db <recovered-owned.sqlite> integrity` and verify its export bytes equal the original versioned export. Use `python master/docstore.py --db <recovered-owned.sqlite> backup --target <absent-original-authority.sqlite>` to restore the original indexed database through SQLite API backup; original exports and complete history stay intact. Never overwrite an existing authority or recover directly into a family whose export pair already exists. Reconcile authority explicitly and rerun installation after verification.', '', 'Repository-owned installer (run from PowerShell 7 / `pwsh`): `& \'./scripts/Install-DocstoreCommitHook.ps1\' -PythonPath \'<absolute installed python.exe>\' -CodexPath \'<absolute installed native codex.exe>\'`. Resolve executable paths for this machine; new clones/worktrees require this local installer and existing signed-in Codex authentication. Topic routing/config: `docs/docstore-commit-config.json` (machine paths are local, ignored). Runtime queues/status: `docs/.docstore-commit/` (ignored). SQLite is authoritative; preserve checksummed current exports and complete export history in Git. Runtime/legacy/external databases are never adopted by this hook.', END])
     lines.insert(3, STARTUP_INSTRUCTION)
+    lines.insert(-1, '')
+    lines.insert(-1, "Optional shared read-only documentation lookup: `& 'C:/Users/pesac/Projects/_pmem/pmem.ps1' --app '.' search '<words>' --limit 5 --json`. Repository-owned SQLite and its native retrieval commands remain authoritative and mandatory; this shared lookup is optional. Code search is only a disposable cache for supported languages and does not replace repository source.")
     block = '\n'.join(lines)
     if BEGIN in text:
         start = text.index(BEGIN); finish = text.index(END, start) + len(END)
@@ -370,6 +372,10 @@ def index_stores(stores: dict[str, str]) -> None:
     else:
         desired = text.rstrip('\r\n') + '\n\n' + block + '\n'
     data = desired.encode('utf-8')
+    if verify_only:
+        if data != old:
+            raise ds.StoreError('snapshot requires current generated AGENTS topic index')
+        return
     if data != old:
         atomic(path, data, old if path.exists() else None)
     for name, additions in (('.gitignore', ['/docs/.docstore-commit/', '/docs/docstore-commit-config.json', '/docs/topics/*.sqlite', '/docs/topics/*.sqlite.writer-lock/']), ('.gitattributes', ['/docs/topics/*-export.jsonl -text', '/docs/topics/*-export.sha256.json -text', '/docs/topics/*-export-history/* -text'])):
@@ -413,6 +419,8 @@ def complete_receipt(commit: str, cfg: dict) -> bool:
         raise ds.StoreError('documentation receipt identity rejected')
     if value.get('state') != 'complete':
         return False
+    if value.get('kind') == 'publication-snapshot':
+        return snapshot_complete(commit, cfg, value)
     if value.get('ai_invoked') is not True or value.get('verification') != 'source-only':
         return False
     applied = value.get('applied_revisions')
@@ -454,6 +462,203 @@ def complete_receipt(commit: str, cfg: dict) -> bool:
                 return False
             ds.validated_body(row)
     return True
+
+
+def snapshot_files(cfg: dict, indexes: dict | None = None) -> dict[str, str]:
+    """Enumerate only published recovery files, never SQLite/runtime databases."""
+    files = {}
+    stores = owned_stores(cfg)
+    index_stores({name: name for name in stores}, verify_only=True)
+    for db in stores.values():
+        with contextlib.closing(ds.connect(db)) as con:
+            ds.check_publication(con, db)
+            if con.execute('PRAGMA integrity_check').fetchone()[0] != 'ok' or con.execute('PRAGMA foreign_key_check').fetchone():
+                raise ds.StoreError('snapshot store integrity failed')
+        export, checksum = ds.exports(db)
+        ds.validated_export(export, checksum)
+        history = ds.checked_path(db.parent / (db.stem + '-export-history'))
+        paths = [export, checksum]
+        if history.is_dir():
+            paths.extend(history.iterdir())
+        for path in paths:
+            path = ds.checked_path(path)
+            if not path.is_file() or (path.parent == history and not re.fullmatch(r'[0-9]+-[0-9a-f]{64}\.(?:jsonl|sha256\.json)', path.name)):
+                raise ds.StoreError('snapshot recovery file identity rejected')
+            if path.parent == history and path.suffix == '.jsonl':
+                ds.validated_export(path, ds.checked_path(path.with_suffix('.sha256.json')))
+            if path.parent == history and path.name.endswith('.sha256.json') and not ds.checked_path(path.with_name(path.name[:-12] + '.jsonl')).is_file():
+                raise ds.StoreError('snapshot history export pair missing')
+            files[path.relative_to(ROOT).as_posix()] = ds.sha(path.read_bytes())
+    for name in ('AGENTS.md', 'master/docstore_commit.py', 'master/docstore.py'):
+        files[name] = ds.sha(ds.checked_path(name).read_bytes())
+    for name, digest in (indexes or {}).items():
+        if ROOT.name.casefold() != 'mytube' or not re.fullmatch(r'private-docs/indexes/[^/]+\.md', name) or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise ds.StoreError('snapshot reviewed generated index identity rejected')
+        data = ds.checked_path(name).read_bytes()
+        ds.secret_guard(data.decode('utf-8-sig'), 'snapshot generated index')
+        files[name] = ds.sha(data)
+    return files
+
+
+def snapshot_marker(commit: str) -> str | None:
+    message = git('show', '-s', '--format=%B', commit).decode('utf-8')
+    matches = re.findall(r'^Docstore-Snapshot: ([0-9a-f]{64})$', message, re.M)
+    return matches[0] if len(matches) == 1 else None
+
+
+def snapshot_manifest(commit: str, cfg: dict) -> dict | None:
+    """A trailer alone never exempts a commit from AI review.
+
+    Retained local intent binds the single reviewed parent and every changed
+    blob. Local receipts are integrity records, not an OS security boundary.
+    """
+    identity = snapshot_marker(commit)
+    if identity is None:
+        return None
+    path = state_path() / 'snapshots' / (identity + '.json')
+    if not path.is_file():
+        return None
+    value = json.loads(ds.checked_path(path).read_bytes())
+    if not isinstance(value, dict) or set(value) != {'format', 'kind', 'parent', 'files', 'allowed', 'engine_sha256', 'indexes'} or ds.sha(ds.canonical(value)) != identity:
+        return None
+    if value['format'] != 1 or value['kind'] != 'publication-snapshot' or not isinstance(value['files'], dict) or not value['files'] or not isinstance(value['allowed'], dict):
+        return None
+    parent = commit_id(value['parent'])
+    parents = git('rev-list', '--parents', '-n', '1', commit).decode('ascii').split()
+    if parents != [commit, parent]:
+        return None
+    parent_receipt = state_path() / 'receipts' / (parent + '.json')
+    if not parent_receipt.is_file():
+        return None
+    original = json.loads(ds.checked_path(parent_receipt).read_bytes())
+    # A snapshot closes one actual AI-reviewed commit, never another snapshot.
+    if original.get('ai_invoked') is not True or original.get('kind') == 'publication-snapshot' or not complete_receipt(parent, cfg):
+        return None
+    if not isinstance(value['indexes'], dict):
+        return None
+    current_allowed = snapshot_files(cfg, value['indexes'])
+    if any(name not in current_allowed or not re.fullmatch(r'[0-9a-f]{64}', digest) for name, digest in value['allowed'].items()):
+        return None
+    changed = git('diff-tree', '--no-commit-id', '--name-only', '-r', '-z', parent, commit).decode('utf-8').split('\0')
+    changed = {name for name in changed if name}
+    if changed != set(value['files']) or not changed.issubset(value['allowed']):
+        return None
+    for name, digest in value['files'].items():
+        if ds.sha(git('show', commit + ':' + name)) != digest:
+            return None
+        # Recovery exports are deliberately -text. Instruction/index/code text
+        # may be cleaned by Git; their immutable staged blob hashes are distinct
+        # from the separately guarded raw publication/maintenance bytes.
+        text_path = name in {'AGENTS.md', 'master/docstore_commit.py', 'master/docstore.py'} or name in value['indexes']
+        if not text_path and digest != value['allowed'][name]:
+            return None
+    if value['engine_sha256'] != value['allowed'].get('master/docstore_commit.py'):
+        return None
+    if 'AGENTS.md' in changed and not snapshot_agent_only(parent, git('show', commit + ':AGENTS.md')):
+        return None
+    return value
+
+
+def snapshot_agent_only(parent: str, data: bytes) -> bool:
+    # Index generation owns only the managed topic block. Existing instructions
+    # outside it must not silently join a publication-only commit.
+    def remainder(raw: bytes) -> str:
+        text = raw.decode('utf-8-sig').replace('\r\n', '\n')
+        if text.count(BEGIN) != 1 or text.count(END) != 1:
+            raise ds.StoreError('snapshot AGENTS topic block rejected')
+        start = text.index(BEGIN); finish = text.index(END, start) + len(END)
+        return text[:start] + text[finish:]
+    return remainder(git('show', parent + ':AGENTS.md')) == remainder(data)
+
+
+def snapshot_complete(commit: str, cfg: dict, receipt: dict) -> bool:
+    value = snapshot_manifest(commit, cfg)
+    return value is not None and receipt.get('ai_invoked') is False and receipt.get('verification') == 'source-only' and receipt.get('parent') == value['parent'] and receipt.get('manifest_sha256') == snapshot_marker(commit)
+
+
+def record_snapshot(commit: str, cfg: dict) -> bool:
+    value = snapshot_manifest(commit, cfg)
+    if value is None:
+        return False
+    save(state_path() / 'receipts' / (commit + '.json'), {'format': 1, 'commit': commit, 'kind': 'publication-snapshot', 'state': 'complete', 'ai_invoked': False, 'parent': value['parent'], 'manifest_sha256': snapshot_marker(commit), 'verification': 'source-only'})
+    return True
+
+
+def snapshot(cfg: dict, *, worker_owned: bool = False, engine_sha256: str | None = None, core_sha256: str | None = None, indexes: dict | None = None) -> dict:
+    """Commit validated closing exports once with normal existing Git hooks.
+
+    Requires idle queue and genuine retained AI completion. Unrelated staged
+    paths are preserved; any unexpected hook-added path fails verification.
+    Changed core helper blobs require core_sha256 to match reviewed raw bytes;
+    retained manifests bind raw allowed hashes separately from newline-cleaned
+    Git blob hashes without changing historical manifest schemas.
+    Failed attempts retain intent for inspection, never retry in a loop.
+    """
+    base = state_path()
+    lock = base / 'worker-lock'
+    owns_lock = worker_owned and lock.is_dir() and json.loads(ds.checked_path(lock / 'owner.json').read_bytes()).get('pid') == os.getpid()
+    if operation_active() or (lock.exists() and not owns_lock) or any((base / 'queue').glob('*.json')):
+        raise ds.StoreError('snapshot requires idle closing work')
+    parent = commit_id(git('rev-parse', 'HEAD').decode('ascii').strip())
+    original = json.loads(ds.checked_path(base / 'receipts' / (parent + '.json')).read_bytes())
+    if original.get('ai_invoked') is not True or original.get('kind') == 'publication-snapshot' or not complete_receipt(parent, cfg):
+        raise ds.StoreError('snapshot requires actual parent AI completion')
+    indexes = indexes or {}
+    allowed = snapshot_files(cfg, indexes)
+    if any(allowed[name] != digest for name, digest in indexes.items()):
+        raise ds.StoreError('snapshot reviewed generated index bytes changed')
+    if not snapshot_agent_only(parent, ds.checked_path('AGENTS.md').read_bytes()):
+        raise ds.StoreError('snapshot refuses unrelated AGENTS instructions')
+    candidates = {}
+    for name, digest in allowed.items():
+        entry = git('ls-tree', '-z', parent, '--', name)
+        if not entry or ds.sha(git('show', parent + ':' + name)) != digest:
+            candidates[name] = digest
+    if not candidates:
+        return {'state': 'unchanged', 'parent': parent, 'commit': parent, 'files': 0}
+    directory = ds.checked_path(base / 'snapshots', mutation=True); directory.mkdir(exist_ok=True)
+    # Hash the real index outside our explicit pathset before Git --only. This
+    # includes staged object identities and stages, not just working-tree bytes.
+    def unrelated_index() -> bytes:
+        return b'\0'.join(entry for entry in git('ls-files', '--stage', '-z').split(b'\0') if entry and entry.split(b'\t', 1)[1].decode('utf-8') not in candidates)
+    before_index = ds.sha(unrelated_index())
+    pathspec = directory / ('preparing-' + parent + '.paths')
+    atomic(pathspec, b'\0'.join((':(literal)' + name).encode('utf-8') for name in sorted(candidates)) + b'\0')
+    if parent != git('rev-parse', 'HEAD').decode('ascii').strip() or snapshot_files(cfg, indexes) != allowed:
+        raise ds.StoreError('snapshot source changed before commit')
+    # Git --only requires newly generated files to be present in the index.
+    # Add only the manifest pathset; unrelated staging remains untouched.
+    git('add', '--pathspec-from-file=' + str(pathspec), '--pathspec-file-nul')
+    files = {}
+    for name in candidates:
+        staged_bytes = git('show', ':' + name)
+        raw = ds.checked_path(name).read_bytes()
+        text_path = name in {'AGENTS.md', 'master/docstore_commit.py', 'master/docstore.py'} or name in indexes
+        if staged_bytes != raw and (not text_path or staged_bytes.replace(b'\r\n', b'\n') != raw.replace(b'\r\n', b'\n')):
+            raise ds.StoreError('snapshot refuses non-newline Git content filtering')
+        staged = ds.sha(staged_bytes)
+        if not git('ls-tree', '-z', parent, '--', name) or ds.sha(git('show', parent + ':' + name)) != staged:
+            files[name] = staged
+    if ds.sha(unrelated_index()) != before_index or parent != git('rev-parse', 'HEAD').decode('ascii').strip() or snapshot_files(cfg, indexes) != allowed:
+        raise ds.StoreError('snapshot source/index changed during staging')
+    if not files:
+        return {'state': 'unchanged', 'parent': parent, 'commit': parent, 'files': 0, 'unrelated_index_preserved': True}
+    # Normal commits already contain their helper changes. Only an actual
+    # changed helper blob in this internal publication needs a reviewed raw pin.
+    if 'master/docstore_commit.py' in files and engine_sha256 != allowed['master/docstore_commit.py']:
+        raise ds.StoreError('snapshot engine maintenance requires explicitly reviewed SHA256')
+    if 'master/docstore.py' in files and core_sha256 != allowed['master/docstore.py']:
+        raise ds.StoreError('snapshot core maintenance requires explicitly reviewed SHA256')
+    manifest = {'format': 1, 'kind': 'publication-snapshot', 'parent': parent, 'files': files, 'allowed': allowed, 'engine_sha256': allowed['master/docstore_commit.py'], 'indexes': indexes}
+    identity = ds.sha(ds.canonical(manifest))
+    save(directory / (identity + '.json'), manifest)
+    pathspec = directory / (identity + '.paths')
+    atomic(pathspec, b'\0'.join((':(literal)' + name).encode('utf-8') for name in sorted(files)) + b'\0')
+    git('commit', '--only', '--pathspec-from-file=' + str(pathspec), '--pathspec-file-nul', '-m', 'Publish reviewed closing documentation\n\nDocstore-Snapshot: ' + identity, timeout=600)
+    current = commit_id(git('rev-parse', 'HEAD').decode('ascii').strip())
+    if ds.sha(unrelated_index()) != before_index or not record_snapshot(current, cfg):
+        raise ds.StoreError('snapshot commit verification failed; inspect retained manifest')
+    return {'state': 'complete', 'parent': parent, 'commit': current, 'files': len(files), 'manifest_sha256': identity, 'unrelated_index_preserved': True}
 
 
 def startup() -> int:
@@ -531,6 +736,8 @@ def process_commit(commit: str, cfg: dict) -> None:
     status_file = base / 'receipts' / (commit + '.json')
     previous = json.loads(status_file.read_bytes()) if status_file.exists() else {}
     if previous.get('state') == 'complete' and complete_receipt(commit, cfg):
+        return
+    if record_snapshot(commit, cfg):
         return
     save(status_file, {'format': 1, 'commit': commit, 'state': 'running', 'stage': 'evidence'})
     rows = documents(owned_stores(cfg))
@@ -632,6 +839,15 @@ def worker() -> int:
                 try:
                     process_commit(commit, cfg)
                     path.unlink()
+                    closed = json.loads(ds.checked_path(base / 'receipts' / (commit + '.json')).read_bytes())
+                    if closed.get('ai_invoked') is True and not any((base / 'queue').glob('*.json')) and commit == git('rev-parse', 'HEAD').decode('ascii').strip() and not operation_active():
+                        try:
+                            snapshot(cfg, worker_owned=True)
+                        except Exception as error:
+                            # Preserve the genuine AI receipt. Retry publication
+                            # on next startup, never synthesize another AI pass.
+                            save(base / 'snapshot-failure.json', {'format': 1, 'parent': commit, 'state': 'failed', 'error': safe_error(error)})
+                            enqueue(commit); result = 1
                 except Exception as error:
                     category = safe_error(error)
                     usage_deferred = category == 'provider-usage-deferred'
@@ -677,6 +893,7 @@ def main() -> int:
     subs.add_parser('worker'); subs.add_parser('index'); subs.add_parser('install-index')
     status = subs.add_parser('status'); status.add_argument('--json', action='store_true')
     gate = subs.add_parser('startup'); gate.add_argument('--json', action='store_true')
+    publication = subs.add_parser('snapshot'); publication.add_argument('--json', action='store_true'); publication.add_argument('--engine-sha256'); publication.add_argument('--core-sha256'); publication.add_argument('--reviewed-indexes')
     replay = subs.add_parser('replay'); replay.add_argument('--commit', required=True); replay.add_argument('--foreground', action='store_true')
     args = parser.parse_args()
     try:
@@ -701,6 +918,12 @@ def main() -> int:
         if args.command == 'startup':
             return startup()
         cfg = config()
+        if args.command == 'snapshot':
+            indexes = json.loads(ds.checked_path(args.reviewed_indexes, owned=False).read_bytes()) if args.reviewed_indexes else {}
+            if not isinstance(indexes, dict):
+                raise ds.StoreError('snapshot reviewed indexes require a JSON hash map')
+            print(json.dumps(snapshot(cfg, engine_sha256=args.engine_sha256, core_sha256=args.core_sha256, indexes=indexes)))
+            return 0
         value = args.commit if args.command == 'replay' else git('rev-parse', 'HEAD').decode().strip()
         commits = [value]
         if args.command == 'post-commit' and args.event == 'post-rewrite':
